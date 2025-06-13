@@ -14,12 +14,18 @@ class Settings(BaseSettings):
     VERSION: str = "1.0.0"
     DESCRIPTION: str = "API for managing temporary road closures in OpenStreetMap"
     
+    # Environment
+    ENVIRONMENT: str = "development"
+    
     # API Configuration
     API_V1_STR: str = "/api/v1"
     DEBUG: bool = False
     
     # Database
     DATABASE_URL: str = "postgresql://user:password@localhost:5432/osm_closures"
+    
+    # Redis Configuration
+    REDIS_URL: str = "redis://localhost:6379/0"
     
     # Database connection pool settings
     DB_POOL_SIZE: int = 5
@@ -69,6 +75,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = True
+        extra = "ignore"  # This allows extra environment variables
 
     def get_database_url(self) -> str:
         """Get database URL with proper formatting."""
@@ -77,16 +84,12 @@ class Settings(BaseSettings):
     @property
     def is_development(self) -> bool:
         """Check if running in development mode."""
-        return self.DEBUG
+        return self.ENVIRONMENT.lower() in ["development", "dev"] or self.DEBUG
 
     @property
     def is_production(self) -> bool:
         """Check if running in production mode."""
-        return not self.DEBUG
-
-
-# Global settings instance
-settings = Settings()
+        return self.ENVIRONMENT.lower() == "production" and not self.DEBUG
 
 
 # Environment-specific configurations
@@ -95,6 +98,7 @@ class DevelopmentSettings(Settings):
     DEBUG: bool = True
     LOG_LEVEL: str = "DEBUG"
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/osm_closures_dev"
+    ENVIRONMENT: str = "development"
 
 
 class ProductionSettings(Settings):
@@ -103,6 +107,7 @@ class ProductionSettings(Settings):
     LOG_LEVEL: str = "WARNING"
     ALLOWED_HOSTS: List[str] = ["your-domain.com"]
     RATE_LIMIT_REQUESTS: int = 1000
+    ENVIRONMENT: str = "production"
 
 
 class TestSettings(Settings):
@@ -110,6 +115,7 @@ class TestSettings(Settings):
     DEBUG: bool = True
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/osm_closures_test"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 5
+    ENVIRONMENT: str = "test"
 
 
 def get_settings() -> Settings:
