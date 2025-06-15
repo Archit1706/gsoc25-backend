@@ -224,13 +224,14 @@ class ClosureService:
         if params.active_only:
             now = datetime.now(timezone.utc)
             query = query.filter(
-                Closure.status == ClosureStatus.ACTIVE,
+                Closure.status == "active",  # Use string literal instead of enum
                 Closure.start_time <= now,
                 or_(Closure.end_time.is_(None), Closure.end_time > now),
             )
 
         if params.closure_type:
-            query = query.filter(Closure.closure_type == params.closure_type)
+            # Use string value for closure type as well
+            query = query.filter(Closure.closure_type == params.closure_type.value)
 
         if params.start_time:
             query = query.filter(Closure.start_time >= params.start_time)
