@@ -1,6 +1,7 @@
 """
 Application configuration using Pydantic settings.
 """
+
 from pydantic_settings import BaseSettings
 from typing import Optional, List
 import os
@@ -8,70 +9,100 @@ import os
 
 class Settings(BaseSettings):
     """Application settings."""
-    
+
     # Application
     PROJECT_NAME: str = "OSM Road Closures API"
     VERSION: str = "1.0.0"
     DESCRIPTION: str = "API for managing temporary road closures in OpenStreetMap"
-    
+
     # Environment
     ENVIRONMENT: str = "development"
-    
+
     # API Configuration
     API_V1_STR: str = "/api/v1"
     DEBUG: bool = False
-    
+
     # Database
     DATABASE_URL: str = "postgresql://user:password@localhost:5432/osm_closures"
-    
+
     # Redis Configuration
     REDIS_URL: str = "redis://localhost:6379/0"
-    
+
     # Database connection pool settings
     DB_POOL_SIZE: int = 5
     DB_MAX_OVERFLOW: int = 10
     DB_POOL_RECYCLE: int = 300
-    
+
     # Security
     SECRET_KEY: str = "your-secret-key-change-this-in-production"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     ALGORITHM: str = "HS256"
-    
+
     # CORS
     ALLOWED_HOSTS: List[str] = ["*"]
     ALLOWED_ORIGINS: List[str] = [
         "http://localhost:3000",  # React development server
         "http://localhost:8080",  # Alternative frontend port
-        "https://your-frontend-domain.com"
+        "https://your-frontend-domain.com",
     ]
-    
+
     # Pagination defaults
     DEFAULT_PAGE_SIZE: int = 50
     MAX_PAGE_SIZE: int = 1000
-    
+
     # Spatial query limits
     MAX_BBOX_AREA: float = 1.0  # Maximum bounding box area in square degrees
-    
+
     # OpenLR Configuration
     OPENLR_ENABLED: bool = True
     OPENLR_MAP_VERSION: str = "latest"
-    
+
     # External services
     OSM_API_BASE_URL: str = "https://api.openstreetmap.org/api/0.6"
     NOMINATIM_API_URL: str = "https://nominatim.openstreetmap.org"
-    
+
     # Logging
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    
+
     # Rate limiting
     RATE_LIMIT_ENABLED: bool = True
     RATE_LIMIT_REQUESTS: int = 100
     RATE_LIMIT_WINDOW: int = 3600  # 1 hour in seconds
-    
+
     # File upload limits (for future features)
     MAX_UPLOAD_SIZE: int = 10 * 1024 * 1024  # 10MB
-    
+
+    # OAuth Configuration
+    OAUTH_ENABLED: bool = True
+
+    # Google OAuth
+    GOOGLE_CLIENT_ID: Optional[str] = None
+    GOOGLE_CLIENT_SECRET: Optional[str] = None
+    GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/v1/auth/google/callback"
+
+    # GitHub OAuth
+    GITHUB_CLIENT_ID: Optional[str] = None
+    GITHUB_CLIENT_SECRET: Optional[str] = None
+    GITHUB_REDIRECT_URI: str = "http://localhost:8000/api/v1/auth/github/callback"
+
+    # OAuth URLs
+    GOOGLE_OAUTH_URL: str = "https://accounts.google.com/o/oauth2/auth"
+    GOOGLE_TOKEN_URL: str = "https://oauth2.googleapis.com/token"
+    GOOGLE_USER_INFO_URL: str = "https://www.googleapis.com/oauth2/v1/userinfo"
+
+    GITHUB_OAUTH_URL: str = "https://github.com/login/oauth/authorize"
+    GITHUB_TOKEN_URL: str = "https://github.com/login/oauth/access_token"
+    GITHUB_USER_INFO_URL: str = "https://api.github.com/user"
+
+    # Frontend URLs for OAuth redirect
+    FRONTEND_URL: str = "http://localhost:3000"
+    OAUTH_SUCCESS_REDIRECT: str = "/dashboard"
+    OAUTH_ERROR_REDIRECT: str = "/login?error=oauth_failed"
+
+    # OAuth session configuration
+    OAUTH_STATE_EXPIRE_MINUTES: int = 10
+
     class Config:
         env_file = ".env"
         case_sensitive = True
@@ -95,6 +126,7 @@ class Settings(BaseSettings):
 # Environment-specific configurations
 class DevelopmentSettings(Settings):
     """Development environment settings."""
+
     DEBUG: bool = True
     LOG_LEVEL: str = "DEBUG"
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/osm_closures_dev"
@@ -103,6 +135,7 @@ class DevelopmentSettings(Settings):
 
 class ProductionSettings(Settings):
     """Production environment settings."""
+
     DEBUG: bool = False
     LOG_LEVEL: str = "WARNING"
     ALLOWED_HOSTS: List[str] = ["your-domain.com"]
@@ -112,8 +145,11 @@ class ProductionSettings(Settings):
 
 class TestSettings(Settings):
     """Testing environment settings."""
+
     DEBUG: bool = True
-    DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/osm_closures_test"
+    DATABASE_URL: str = (
+        "postgresql://postgres:postgres@localhost:5432/osm_closures_test"
+    )
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 5
     ENVIRONMENT: str = "test"
 
@@ -123,7 +159,7 @@ def get_settings() -> Settings:
     Get settings based on environment.
     """
     env = os.getenv("ENVIRONMENT", "development").lower()
-    
+
     if env == "production":
         return ProductionSettings()
     elif env == "test":
