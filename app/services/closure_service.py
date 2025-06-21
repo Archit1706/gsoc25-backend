@@ -58,13 +58,14 @@ class ClosureService:
             closure = Closure(
                 geometry=func.ST_GeomFromText(geometry_wkt, 4326),
                 description=closure_data.description,
-                closure_type=closure_data.closure_type,
+                closure_type=closure_data.closure_type.value,
                 start_time=closure_data.start_time,
                 end_time=closure_data.end_time,
                 source=closure_data.source,
                 confidence_level=closure_data.confidence_level,
                 osm_way_ids=closure_data.osm_way_ids,
                 submitter_id=user_id,
+                status=ClosureStatus.ACTIVE.value,
             )
 
             # Generate OpenLR code if enabled
@@ -224,14 +225,13 @@ class ClosureService:
         if params.active_only:
             now = datetime.now(timezone.utc)
             query = query.filter(
-                Closure.status == "active",  # Use string literal instead of enum
+                Closure.status == ClosureStatus.ACTIVE,
                 Closure.start_time <= now,
                 or_(Closure.end_time.is_(None), Closure.end_time > now),
             )
 
         if params.closure_type:
-            # Use string value for closure type as well
-            query = query.filter(Closure.closure_type == params.closure_type.value)
+            query = query.filter(Closure.closure_type == params.closure_type)
 
         if params.start_time:
             query = query.filter(Closure.start_time >= params.start_time)
