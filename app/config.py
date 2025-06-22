@@ -1,5 +1,5 @@
 """
-Application configuration using Pydantic settings.
+Application configuration using Pydantic settings with enhanced OpenLR support.
 """
 
 from pydantic_settings import BaseSettings
@@ -56,6 +56,19 @@ class Settings(BaseSettings):
     # OpenLR Configuration
     OPENLR_ENABLED: bool = True
     OPENLR_MAP_VERSION: str = "latest"
+    OPENLR_FORMAT: str = "base64"  # base64, binary, xml
+    OPENLR_ACCURACY_TOLERANCE: float = 50.0  # meters
+    OPENLR_MAX_POINTS: int = 15  # Maximum points in OpenLR encoding
+    OPENLR_MIN_DISTANCE: float = 15.0  # Minimum distance between points in meters
+    OPENLR_ENABLE_CACHING: bool = True  # Cache OpenLR codes for performance
+    OPENLR_OVERPASS_URL: str = "https://overpass-api.de/api/interpreter"
+    OPENLR_OSM_API_URL: str = "https://api.openstreetmap.org/api/0.6"
+    OPENLR_TIMEOUT: int = 10  # seconds for external API calls
+
+    # OpenLR Quality Settings
+    OPENLR_VALIDATE_ROUNDTRIP: bool = True  # Validate encode/decode roundtrip
+    OPENLR_AUTO_SIMPLIFY: bool = True  # Auto-simplify complex geometries
+    OPENLR_COORDINATE_PRECISION: int = 5  # Decimal places for coordinates
 
     # External services
     OSM_API_BASE_URL: str = "https://api.openstreetmap.org/api/0.6"
@@ -122,6 +135,25 @@ class Settings(BaseSettings):
         """Check if running in production mode."""
         return self.ENVIRONMENT.lower() == "production" and not self.DEBUG
 
+    @property
+    def openlr_settings(self) -> dict:
+        """Get OpenLR-specific settings as a dictionary."""
+        return {
+            "enabled": self.OPENLR_ENABLED,
+            "format": self.OPENLR_FORMAT,
+            "map_version": self.OPENLR_MAP_VERSION,
+            "accuracy_tolerance": self.OPENLR_ACCURACY_TOLERANCE,
+            "max_points": self.OPENLR_MAX_POINTS,
+            "min_distance": self.OPENLR_MIN_DISTANCE,
+            "enable_caching": self.OPENLR_ENABLE_CACHING,
+            "overpass_url": self.OPENLR_OVERPASS_URL,
+            "osm_api_url": self.OPENLR_OSM_API_URL,
+            "timeout": self.OPENLR_TIMEOUT,
+            "validate_roundtrip": self.OPENLR_VALIDATE_ROUNDTRIP,
+            "auto_simplify": self.OPENLR_AUTO_SIMPLIFY,
+            "coordinate_precision": self.OPENLR_COORDINATE_PRECISION,
+        }
+
 
 # Environment-specific configurations
 class DevelopmentSettings(Settings):
@@ -131,6 +163,11 @@ class DevelopmentSettings(Settings):
     LOG_LEVEL: str = "DEBUG"
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/osm_closures_dev"
     ENVIRONMENT: str = "development"
+
+    # More permissive OpenLR settings for development
+    OPENLR_ACCURACY_TOLERANCE: float = 100.0  # meters
+    OPENLR_VALIDATE_ROUNDTRIP: bool = True
+    OPENLR_ENABLE_CACHING: bool = False  # Disable caching for easier testing
 
 
 class ProductionSettings(Settings):
@@ -142,6 +179,11 @@ class ProductionSettings(Settings):
     RATE_LIMIT_REQUESTS: int = 1000
     ENVIRONMENT: str = "production"
 
+    # Stricter OpenLR settings for production
+    OPENLR_ACCURACY_TOLERANCE: float = 25.0  # meters
+    OPENLR_VALIDATE_ROUNDTRIP: bool = True
+    OPENLR_ENABLE_CACHING: bool = True
+
 
 class TestSettings(Settings):
     """Testing environment settings."""
@@ -152,6 +194,10 @@ class TestSettings(Settings):
     )
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 5
     ENVIRONMENT: str = "test"
+
+    # Disable OpenLR for faster tests unless specifically testing OpenLR
+    OPENLR_ENABLED: bool = False
+    OPENLR_VALIDATE_ROUNDTRIP: bool = False
 
 
 def get_settings() -> Settings:

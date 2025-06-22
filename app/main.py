@@ -1,5 +1,5 @@
 """
-FastAPI application for OSM Road Closures API.
+FastAPI application for OSM Road Closures API with OpenLR integration.
 """
 
 from fastapi import FastAPI, HTTPException, Request, status
@@ -16,6 +16,7 @@ from app.config import settings
 from app.core.database import init_database, close_database
 from app.core.exceptions import APIException, ValidationException
 from app.api import closures, users, auth
+from app.api import openlr  # Import OpenLR endpoints
 
 
 # Configure logging
@@ -35,6 +36,13 @@ async def lifespan(app: FastAPI):
     try:
         await init_database()
         logger.info("Database initialized successfully")
+
+        # Log OpenLR status
+        if settings.OPENLR_ENABLED:
+            logger.info(f"OpenLR service enabled - Format: {settings.OPENLR_FORMAT}")
+        else:
+            logger.info("OpenLR service disabled")
+
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
         raise
@@ -168,6 +176,10 @@ async def health_check():
         "timestamp": time.time(),
         "version": settings.VERSION,
         "database": "connected" if db_healthy else "disconnected",
+        "openlr": {
+            "enabled": settings.OPENLR_ENABLED,
+            "format": settings.OPENLR_FORMAT if settings.OPENLR_ENABLED else None,
+        },
     }
 
 
@@ -186,7 +198,7 @@ async def detailed_health_check():
     db_healthy = "error" not in db_info
 
     try:
-        #import psutil
+        import psutil
 
         system_info = {
             "platform": platform.platform(),
@@ -210,6 +222,11 @@ async def detailed_health_check():
         "environment": "development" if settings.DEBUG else "production",
         "database": db_info,
         "system": system_info,
+        "openlr": {
+            "enabled": settings.OPENLR_ENABLED,
+            "format": settings.OPENLR_FORMAT if settings.OPENLR_ENABLED else None,
+            "settings": settings.openlr_settings if settings.OPENLR_ENABLED else {},
+        },
     }
 
 
@@ -226,10 +243,17 @@ async def root():
         "version": settings.VERSION,
         "docs_url": f"{settings.API_V1_STR}/docs",
         "openapi_url": f"{settings.API_V1_STR}/openapi.json",
+        "features": {
+            "openlr_enabled": settings.OPENLR_ENABLED,
+            "oauth_enabled": settings.OAUTH_ENABLED,
+        },
         "endpoints": {
             "closures": f"{settings.API_V1_STR}/closures",
             "users": f"{settings.API_V1_STR}/users",
             "auth": f"{settings.API_V1_STR}/auth",
+            "openlr": (
+                f"{settings.API_V1_STR}/openlr" if settings.OPENLR_ENABLED else None
+            ),
         },
     }
 
@@ -244,6 +268,15 @@ app.include_router(users.router, prefix=f"{settings.API_V1_STR}/users", tags=["u
 app.include_router(
     auth.router, prefix=f"{settings.API_V1_STR}/auth", tags=["authentication"]
 )
+
+# Include OpenLR router only if enabled
+if settings.OPENLR_ENABLED:
+    app.include_router(
+        openlr.router, prefix=f"{settings.API_V1_STR}/openlr", tags=["openlr"]
+    )
+    logger.info("OpenLR endpoints enabled")
+else:
+    logger.info("OpenLR endpoints disabled")
 
 
 # Custom OpenAPI schema
@@ -264,16 +297,24 @@ def custom_openapi():
         
         - 🗺️ **Geospatial Support**: Store and query road closures with PostGIS
         - 📍 **OpenLR Integration**: Location referencing compatible with navigation systems
-        - 🔐 **Authentication**: Secure API access with JWT tokens
+        - 🔐 **Authentication**: Secure API access with JWT tokens and OAuth
         - 📊 **Statistics**: Closure analytics and reporting
         - 🚀 **High Performance**: Optimized for real-time navigation applications
+        
+        ## OpenLR Support
+        
+        {'✅ **Enabled**: Advanced location referencing with OpenLR format' if settings.OPENLR_ENABLED else '❌ **Disabled**: OpenLR functionality not available'}
+        
+        {f"- **Format**: {settings.OPENLR_FORMAT}" if settings.OPENLR_ENABLED else ""}
+        {f"- **Accuracy Tolerance**: {settings.OPENLR_ACCURACY_TOLERANCE}m" if settings.OPENLR_ENABLED else ""}
         
         ## Usage
         
         1. **Authentication**: Obtain an access token via `/auth/login`
         2. **Submit Closures**: POST to `/closures` with GeoJSON geometry
         3. **Query Closures**: GET from `/closures` with spatial and temporal filters
-        4. **Integration**: Use OpenLR codes for cross-platform compatibility
+        4. **OpenLR Integration**: Use OpenLR codes for cross-platform compatibility
+        {'5. **OpenLR Operations**: Use `/openlr/*` endpoints for encoding/decoding' if settings.OPENLR_ENABLED else ''}
         
         ## Rate Limits
         
@@ -290,8 +331,8 @@ def custom_openapi():
     # Add custom schema extensions
     openapi_schema["info"]["contact"] = {
         "name": "OSM Road Closures API Support",
-        "url": "https://github.com/your-repo/osm-road-closures",
-        "email": "support@example.com",
+        "url": "https://github.com/Archit1706/temporary-road-closures",
+        "email": "arath21@uic.edu",
     }
 
     openapi_schema["info"]["license"] = {
@@ -310,6 +351,15 @@ def custom_openapi():
         "BearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"},
         "ApiKeyAuth": {"type": "apiKey", "in": "header", "name": "X-API-Key"},
     }
+
+    # Add OpenLR-specific documentation
+    if settings.OPENLR_ENABLED:
+        openapi_schema["info"]["x-openlr"] = {
+            "enabled": True,
+            "format": settings.OPENLR_FORMAT,
+            "accuracy_tolerance_meters": settings.OPENLR_ACCURACY_TOLERANCE,
+            "documentation": "https://www.openlr.org/",
+        }
 
     app.openapi_schema = openapi_schema
     return app.openapi_schema
