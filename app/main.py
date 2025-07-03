@@ -1,5 +1,5 @@
 """
-FastAPI application for OSM Road Closures API with OpenLR integration.
+FastAPI application for OSM Road Closures API with proper Swagger authentication.
 """
 
 from fastapi import FastAPI, HTTPException, Request, status
@@ -8,6 +8,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
+from fastapi.security import HTTPBearer
 import time
 import logging
 from contextlib import asynccontextmanager
@@ -24,6 +25,9 @@ logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL), format=settings.LOG_FORMAT
 )
 logger = logging.getLogger(__name__)
+
+# Security scheme for Swagger UI
+security = HTTPBearer()
 
 
 @asynccontextmanager
@@ -251,9 +255,12 @@ async def root():
             "closures": f"{settings.API_V1_STR}/closures",
             "users": f"{settings.API_V1_STR}/users",
             "auth": f"{settings.API_V1_STR}/auth",
-            "openlr": (
-                f"{settings.API_V1_STR}/openlr" if settings.OPENLR_ENABLED else None
-            ),
+        },
+        "demo_instructions": {
+            "step_1": "Register a user at /auth/register",
+            "step_2": "Login at /auth/login to get access token",
+            "step_3": "Click 'Authorize' button in docs and enter: Bearer <your_token>",
+            "step_4": "Use authenticated endpoints",
         },
     }
 
@@ -269,20 +276,21 @@ app.include_router(
     auth.router, prefix=f"{settings.API_V1_STR}/auth", tags=["authentication"]
 )
 
-# Include OpenLR router only if enabled
-if settings.OPENLR_ENABLED:
+# Add OpenLR router if exists
+try:
+    from app.api import openlr
+
     app.include_router(
         openlr.router, prefix=f"{settings.API_V1_STR}/openlr", tags=["openlr"]
     )
-    logger.info("OpenLR endpoints enabled")
-else:
-    logger.info("OpenLR endpoints disabled")
+except ImportError:
+    logger.warning("OpenLR router not found, skipping...")
 
 
-# Custom OpenAPI schema
+# Custom OpenAPI schema with proper authentication
 def custom_openapi():
     """
-    Custom OpenAPI schema with enhanced documentation.
+    Custom OpenAPI schema with proper OAuth2PasswordBearer authentication.
     """
     if app.openapi_schema:
         return app.openapi_schema
@@ -293,73 +301,162 @@ def custom_openapi():
         description=f"""
         {settings.DESCRIPTION}
         
-        ## Features
+        ## 🚀 Getting Started
         
-        - 🗺️ **Geospatial Support**: Store and query road closures with PostGIS
-        - 📍 **OpenLR Integration**: Location referencing compatible with navigation systems
-        - 🔐 **Authentication**: Secure API access with JWT tokens and OAuth
-        - 📊 **Statistics**: Closure analytics and reporting
-        - 🚀 **High Performance**: Optimized for real-time navigation applications
+        1. **Register**: Create a user account using `/auth/register`
+        2. **Login**: Click the 🔒 **Authorize** button below and use OAuth2 login
+        3. **Explore**: Use any authenticated endpoint!
         
-        ## OpenLR Support
+        ## 🔑 Authentication
         
-        {'✅ **Enabled**: Advanced location referencing with OpenLR format' if settings.OPENLR_ENABLED else '❌ **Disabled**: OpenLR functionality not available'}
+        This API uses **OAuth2 Password Bearer** authentication with JWT tokens.
         
-        {f"- **Format**: {settings.OPENLR_FORMAT}" if settings.OPENLR_ENABLED else ""}
-        {f"- **Accuracy Tolerance**: {settings.OPENLR_ACCURACY_TOLERANCE}m" if settings.OPENLR_ENABLED else ""}
+        **Quick Demo Flow:**
+        1. Use `/auth/register` to create an account (if needed)
+        2. Click the **Authorize** button below
+        3. Enter your username and password in the OAuth2 form
+        4. Now you can test all authenticated endpoints!
         
-        ## Usage
+        ## 🗺️ Features
         
-        1. **Authentication**: Obtain an access token via `/auth/login`
-        2. **Submit Closures**: POST to `/closures` with GeoJSON geometry
-        3. **Query Closures**: GET from `/closures` with spatial and temporal filters
-        4. **OpenLR Integration**: Use OpenLR codes for cross-platform compatibility
-        {'5. **OpenLR Operations**: Use `/openlr/*` endpoints for encoding/decoding' if settings.OPENLR_ENABLED else ''}
+        - **🗄️ Geospatial Support**: Store and query road closures with PostGIS
+        - **📍 OpenLR Integration**: Location referencing compatible with navigation systems  
+        - **🔐 Secure Authentication**: OAuth2 + JWT tokens with user management
+        - **📊 Rich Querying**: Spatial, temporal, and type-based filtering
+        - **🚀 High Performance**: Optimized for real-time navigation applications
         
-        ## Rate Limits
+        ## 📋 Example Usage
         
-        - **Authenticated**: {settings.RATE_LIMIT_REQUESTS} requests per hour
-        - **Public endpoints**: Limited rate for anonymous access
+        **Create a Closure:**
+        ```json
+        {{
+          "geometry": {{
+            "type": "LineString", 
+            "coordinates": [[-87.6298, 41.8781], [-87.6290, 41.8785]]
+          }},
+          "description": "Water main repair blocking eastbound traffic",
+          "closure_type": "construction",
+          "start_time": "2025-07-03T08:00:00Z",
+          "end_time": "2025-07-03T18:00:00Z"
+        }}
+        ```
         
-        ## Support
+        ## 🔗 Quick Links
         
-        For issues and questions, please visit the project repository or contact the development team.
+        - **Health Check**: [/health](/health)
+        - **Database Admin**: http://localhost:8080
+        - **GitHub**: https://github.com/Archit1706/temporary-road-closures
+        
+        ---
+        
+        **💡 Tip**: After authenticating with OAuth2, try creating a closure and then querying it with different filters!
         """,
         routes=app.routes,
     )
 
-    # Add custom schema extensions
+    # Enhanced contact and license info
     openapi_schema["info"]["contact"] = {
         "name": "OSM Road Closures API Support",
         "url": "https://github.com/Archit1706/temporary-road-closures",
-        "email": "arath21@uic.edu",
+        "email": "architrathod77@gmail.com",
     }
 
     openapi_schema["info"]["license"] = {
-        "name": "MIT License",
-        "url": "https://opensource.org/licenses/MIT",
+        "name": "GNU Affero General Public License v3.0",
+        "url": "https://www.gnu.org/licenses/agpl-3.0.en.html",
     }
 
     # Add server information
     openapi_schema["servers"] = [
         {"url": "http://localhost:8000", "description": "Development server"},
-        {"url": "https://api.osmclosures.org", "description": "Production server"},
+        {
+            "url": "https://api.osmclosures.org",
+            "description": "Production server (future)",
+        },
     ]
 
-    # Add security schemes
+    # CORRECTED: Proper OAuth2PasswordBearer security scheme
     openapi_schema["components"]["securitySchemes"] = {
-        "BearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"},
-        "ApiKeyAuth": {"type": "apiKey", "in": "header", "name": "X-API-Key"},
+        "OAuth2PasswordBearer": {
+            "type": "oauth2",
+            "flows": {
+                "password": {
+                    "tokenUrl": f"{settings.API_V1_STR}/auth/login",
+                    "scopes": {},
+                }
+            },
+            "description": """
+            **OAuth2 Password Bearer Authentication**
+            
+            Enter your username and password to get authenticated.
+            
+            Test credentials:
+            - Username: chicago_mapper
+            - Password: SecurePass123
+            """,
+        },
+        "BearerAuth": {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT",
+            "description": """
+            **HTTP Bearer Token Authentication** (Alternative)
+            
+            For direct API calls, include:
+            Header: Authorization: Bearer <your_access_token>
+            """,
+        },
+        "ApiKeyAuth": {
+            "type": "apiKey",
+            "in": "header",
+            "name": "X-API-Key",
+            "description": """
+            **API Key Authentication** (Alternative to JWT)
+            
+            Get your API key from /auth/me after login, then include:
+            Header: X-API-Key: osm_closures_<your_key>
+            """,
+        },
     }
 
-    # Add OpenLR-specific documentation
-    if settings.OPENLR_ENABLED:
-        openapi_schema["info"]["x-openlr"] = {
-            "enabled": True,
-            "format": settings.OPENLR_FORMAT,
-            "accuracy_tolerance_meters": settings.OPENLR_ACCURACY_TOLERANCE,
-            "documentation": "https://www.openlr.org/",
-        }
+    # CORRECTED: Include OAuth2PasswordBearer in global security
+    openapi_schema["security"] = [
+        {"OAuth2PasswordBearer": []},
+        {"BearerAuth": []},
+        {"ApiKeyAuth": []},
+    ]
+
+    # Add example schemas
+    openapi_schema["components"]["examples"] = {
+        "UserRegistration": {
+            "summary": "User Registration Example",
+            "value": {
+                "username": "chicago_mapper",
+                "email": "mapper@chicago.gov",
+                "password": "SecurePass123",
+                "full_name": "Chicago City Mapper",
+            },
+        },
+        "UserLogin": {
+            "summary": "User Login Example",
+            "value": {"username": "chicago_mapper", "password": "SecurePass123"},
+        },
+        "ClosureExample": {
+            "summary": "Construction Closure Example",
+            "value": {
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [[-87.6298, 41.8781], [-87.6290, 41.8785]],
+                },
+                "description": "Water main repair blocking eastbound traffic on Madison Street",
+                "closure_type": "construction",
+                "start_time": "2025-07-03T08:00:00Z",
+                "end_time": "2025-07-03T18:00:00Z",
+                "source": "City of Chicago",
+                "confidence_level": 9,
+            },
+        },
+    }
 
     app.openapi_schema = openapi_schema
     return app.openapi_schema
