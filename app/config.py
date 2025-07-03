@@ -3,7 +3,7 @@ Application configuration using Pydantic settings with enhanced OpenLR support.
 """
 
 from pydantic_settings import BaseSettings
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import os
 
 
@@ -56,19 +56,17 @@ class Settings(BaseSettings):
     # OpenLR Configuration
     OPENLR_ENABLED: bool = True
     OPENLR_MAP_VERSION: str = "latest"
-    OPENLR_FORMAT: str = "base64"  # base64, binary, xml
-    OPENLR_ACCURACY_TOLERANCE: float = 50.0  # meters
-    OPENLR_MAX_POINTS: int = 15  # Maximum points in OpenLR encoding
-    OPENLR_MIN_DISTANCE: float = 15.0  # Minimum distance between points in meters
-    OPENLR_ENABLE_CACHING: bool = True  # Cache OpenLR codes for performance
+    OPENLR_FORMAT: str = "base64"
+    OPENLR_ACCURACY_TOLERANCE: float = 50.0
+    OPENLR_MAX_POINTS: int = 15
+    OPENLR_MIN_DISTANCE: float = 15.0
+    OPENLR_ENABLE_CACHING: bool = True
     OPENLR_OVERPASS_URL: str = "https://overpass-api.de/api/interpreter"
     OPENLR_OSM_API_URL: str = "https://api.openstreetmap.org/api/0.6"
-    OPENLR_TIMEOUT: int = 10  # seconds for external API calls
-
-    # OpenLR Quality Settings
-    OPENLR_VALIDATE_ROUNDTRIP: bool = True  # Validate encode/decode roundtrip
-    OPENLR_AUTO_SIMPLIFY: bool = True  # Auto-simplify complex geometries
-    OPENLR_COORDINATE_PRECISION: int = 5  # Decimal places for coordinates
+    OPENLR_TIMEOUT: int = 10
+    OPENLR_VALIDATE_ROUNDTRIP: bool = True
+    OPENLR_AUTO_SIMPLIFY: bool = True
+    OPENLR_COORDINATE_PRECISION: int = 5
 
     # External services
     OSM_API_BASE_URL: str = "https://api.openstreetmap.org/api/0.6"
@@ -136,8 +134,8 @@ class Settings(BaseSettings):
         return self.ENVIRONMENT.lower() == "production" and not self.DEBUG
 
     @property
-    def openlr_settings(self) -> dict:
-        """Get OpenLR-specific settings as a dictionary."""
+    def openlr_settings(self) -> Dict[str, Any]:
+        """Get OpenLR configuration settings."""
         return {
             "enabled": self.OPENLR_ENABLED,
             "format": self.OPENLR_FORMAT,
@@ -149,6 +147,7 @@ class Settings(BaseSettings):
             "validate_roundtrip": self.OPENLR_VALIDATE_ROUNDTRIP,
             "auto_simplify": self.OPENLR_AUTO_SIMPLIFY,
             "coordinate_precision": self.OPENLR_COORDINATE_PRECISION,
+            "timeout": self.OPENLR_TIMEOUT,
         }
 
 
