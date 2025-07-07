@@ -1,5 +1,5 @@
 """
-Closure model for managing temporary road closures.
+Closure model for managing temporary road closures with Point and LineString support.
 """
 
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Enum, func
@@ -47,17 +47,26 @@ closure_status_enum = ENUM(ClosureStatus, name="closure_status_enum", create_typ
 class Closure(BaseModel):
     """
     Model representing a temporary road closure.
+    Supports both Point (for incidents at specific locations) and LineString (for road segments).
     """
 
     __tablename__ = "closures"
 
     id = Column(Integer, primary_key=True, index=True, doc="Unique closure identifier")
 
-    # Geospatial data
+    # Geospatial data - Updated to support both Point and LineString
     geometry = Column(
-        Geometry("LINESTRING", srid=4326),
+        Geometry("GEOMETRY", srid=4326),  # Changed from LINESTRING to GEOMETRY
         nullable=False,
-        doc="Road segment geometry as LineString in WGS84",
+        doc="Road closure geometry as Point or LineString in WGS84",
+    )
+
+    # Geometry type for easier querying and validation
+    geometry_type = Column(
+        String(20),
+        nullable=False,
+        index=True,
+        doc="Geometry type: Point or LineString",
     )
 
     # Temporal data
@@ -84,7 +93,7 @@ class Closure(BaseModel):
         doc="Type of closure (construction, accident, etc.)",
     )
 
-    # OpenLR location reference
+    # OpenLR location reference (may be null for Point geometries)
     openlr_code = Column(Text, nullable=True, doc="OpenLR encoded location reference")
 
     # Status and metadata
@@ -112,13 +121,20 @@ class Closure(BaseModel):
         Integer, nullable=True, doc="Confidence level of the closure information (1-10)"
     )
 
+    # Point-specific fields
+    radius_meters = Column(
+        Integer,
+        nullable=True,
+        doc="Affected radius in meters for Point geometries",
+    )
+
     # Relationships
     submitter = relationship(
         "User", back_populates="closures", doc="User who submitted this closure"
     )
 
     def __init__(self, **kwargs):
-        """Initialize closure with automatic status management."""
+        """Initialize closure with automatic status management and geometry type detection."""
         super().__init__(**kwargs)
         self.update_status_if_needed()
 
@@ -158,6 +174,16 @@ class Closure(BaseModel):
 
         delta = self.end_time - self.start_time
         return delta.total_seconds() / 3600
+
+    @property
+    def is_point_closure(self) -> bool:
+        """Check if this is a point-based closure."""
+        return self.geometry_type == "Point"
+
+    @property
+    def is_linestring_closure(self) -> bool:
+        """Check if this is a linestring-based closure."""
+        return self.geometry_type == "LineString"
 
     def update_status_if_needed(self) -> bool:
         """
@@ -201,17 +227,24 @@ class Closure(BaseModel):
 
         # This will need to be implemented with a database session
         # For now, return a placeholder
+        properties = {
+            "id": self.id,
+            "description": self.description,
+            "closure_type": self.closure_type,
+            "status": self.status,
+            "start_time": self.start_time.isoformat(),
+            "end_time": self.end_time.isoformat() if self.end_time else None,
+            "geometry_type": self.geometry_type,
+        }
+
+        # Add point-specific properties
+        if self.is_point_closure and self.radius_meters:
+            properties["radius_meters"] = self.radius_meters
+
         return {
             "type": "Feature",
             "geometry": None,  # Will be populated by service layer
-            "properties": {
-                "id": self.id,
-                "description": self.description,
-                "closure_type": self.closure_type.value,
-                "status": self.status.value,
-                "start_time": self.start_time.isoformat(),
-                "end_time": self.end_time.isoformat() if self.end_time else None,
-            },
+            "properties": properties,
         }
 
     @classmethod
@@ -256,7 +289,7 @@ class Closure(BaseModel):
         limit: int = 100,
     ) -> List["Closure"]:
         """
-        Get closures within a bounding box.
+        Get closures within a bounding box (works for both Point and LineString).
 
         Args:
             db: Database session
@@ -283,6 +316,40 @@ class Closure(BaseModel):
         query = db.query(cls).filter(
             ST_Intersects(cls.geometry, func.ST_GeomFromText(bbox_wkt, 4326))
         )
+
+        if valid_only:
+            now = datetime.datetime.now(datetime.timezone.utc)
+            query = query.filter(
+                cls.status == ClosureStatus.ACTIVE,
+                cls.start_time <= now,
+                (cls.end_time.is_(None)) | (cls.end_time > now),
+            )
+
+        return query.offset(skip).limit(limit).all()
+
+    @classmethod
+    def get_by_geometry_type(
+        cls,
+        db: Session,
+        geometry_type: str,
+        valid_only: bool = True,
+        skip: int = 0,
+        limit: int = 100,
+    ) -> List["Closure"]:
+        """
+        Get closures by geometry type.
+
+        Args:
+            db: Database session
+            geometry_type: Geometry type ('Point' or 'LineString')
+            valid_only: Whether to return only valid closures
+            skip: Number of records to skip
+            limit: Maximum number of records to return
+
+        Returns:
+            List[Closure]: List of closures of the specified geometry type
+        """
+        query = db.query(cls).filter(cls.geometry_type == geometry_type)
 
         if valid_only:
             now = datetime.datetime.now(datetime.timezone.utc)
@@ -383,11 +450,11 @@ class Closure(BaseModel):
         # Add computed properties
         data["is_valid"] = self.is_valid
         data["duration_hours"] = self.duration_hours
+        data["is_point_closure"] = self.is_point_closure
+        data["is_linestring_closure"] = self.is_linestring_closure
 
         return data
 
     def __repr__(self) -> str:
         """String representation of the closure."""
-        return (
-            f"<Closure(id={self.id}, type={self.closure_type}, status={self.status})>"
-        )
+        return f"<Closure(id={self.id}, type={self.closure_type}, status={self.status}, geom_type={self.geometry_type})>"

@@ -2,6 +2,26 @@
 
 A FastAPI-based backend service for managing temporary road closures in OpenStreetMap, designed for Google Summer of Code 2025.
 
+## 🚀 New Features: Point Geometry Support
+
+The API now supports **two types of closure geometries**:
+
+### 🔴 Point Closures
+
+-   **Use for**: Accidents, incidents, emergency situations, small construction sites
+-   **Location method**: Coordinate point with radius-based affected area
+-   **Required fields**: `coordinates` (longitude, latitude)
+-   **Optional fields**: `radius_meters` (default: 50m)
+-   **OpenLR**: Not applicable (use radius-based location referencing)
+
+### 📍 LineString Closures
+
+-   **Use for**: Road segments, lane closures, planned construction, route diversions
+-   **Location method**: Linear path along road network
+-   **Required fields**: `coordinates` (array of coordinate pairs)
+-   **OpenLR**: Automatic encoding for navigation compatibility
+-   **Minimum**: 2 coordinate points
+
 ## 🔧 Configuration
 
 ### Environment Variables
@@ -23,6 +43,270 @@ For production, ensure your PostgreSQL instance has:
 -   Sufficient memory for spatial operations
 -   Appropriate connection limits
 -   Regular backups configured
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+-   Python 3.11+
+-   Docker & Docker Compose
+-   Git
+
+### 1. Clone and Setup
+
+```bash
+# Clone the repository
+git clone https://github.com/Archit1706/temporary-road-closures
+cd backend
+
+# Copy environment configuration
+cp .env.example .env
+
+# Edit .env with your settings (optional for development)
+```
+
+### 2. Start with Docker (Recommended)
+
+```bash
+# Start all services
+docker-compose up -d
+
+# Check services are running
+docker-compose ps
+
+# View logs
+docker-compose logs -f api
+```
+
+The API will be available at:
+
+-   **API**: http://localhost:8000
+-   **API Docs**: http://localhost:8000/api/v1/docs
+-   **Database Admin**: http://localhost:8080 (Adminer)
+
+### 3. Initialize Database with Sample Data
+
+```bash
+# Run database initialization with Point and LineString examples
+docker-compose exec api python scripts/init_db.py
+
+# Or run migrations manually
+docker-compose exec api alembic upgrade head
+```
+
+### 4. Test the API
+
+```bash
+# Health check
+curl http://localhost:8000/health
+
+# Get all closures
+curl http://localhost:8000/api/v1/closures
+
+# Get only Point closures
+curl "http://localhost:8000/api/v1/closures/?geometry_type=Point"
+
+# Get only LineString closures
+curl "http://localhost:8000/api/v1/closures/?geometry_type=LineString"
+
+# API documentation
+open http://localhost:8000/api/v1/docs
+```
+
+## 📋 API Usage Examples
+
+### Authentication
+
+```bash
+# Create user account
+curl -X POST "http://localhost:8000/api/v1/auth/register" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "myuser",
+    "email": "user@example.com",
+    "password": "secure123"
+  }'
+
+# Login to get token
+curl -X POST "http://localhost:8000/api/v1/auth/login" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "myuser",
+    "password": "secure123"
+  }'
+
+# Use token in requests
+export TOKEN="your-jwt-token-here"
+```
+
+### Create Point Closure (Accident/Incident)
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/closures/" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "geometry": {
+      "type": "Point",
+      "coordinates": [-87.6294, 41.8783]
+    },
+    "description": "Vehicle accident blocking intersection at Madison and Wells",
+    "closure_type": "accident",
+    "start_time": "2025-07-06T14:30:00Z",
+    "end_time": "2025-07-06T16:00:00Z",
+    "radius_meters": 100,
+    "source": "Chicago Police Department",
+    "confidence_level": 10
+  }'
+```
+
+### Create LineString Closure (Road Construction)
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/closures/" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "geometry": {
+      "type": "LineString",
+      "coordinates": [[-87.6298, 41.8781], [-87.6290, 41.8785]]
+    },
+    "description": "Water main repair blocking eastbound traffic",
+    "closure_type": "construction",
+    "start_time": "2025-07-06T08:00:00Z",
+    "end_time": "2025-07-06T18:00:00Z",
+    "source": "City of Chicago",
+    "confidence_level": 9
+  }'
+```
+
+### Query Closures by Geometry Type
+
+```bash
+# Get accident locations (Point closures)
+curl "http://localhost:8000/api/v1/closures/?geometry_type=Point&closure_type=accident"
+
+# Get construction road segments (LineString closures)
+curl "http://localhost:8000/api/v1/closures/?geometry_type=LineString&closure_type=construction"
+
+# Get closures in bounding box (works for both types)
+curl "http://localhost:8000/api/v1/closures/?bbox=-87.7,41.8,-87.6,41.9&active_only=true"
+```
+
+### Check OpenLR Support
+
+```bash
+# Get OpenLR information and geometry support
+curl "http://localhost:8000/api/v1/openlr/info"
+
+# Check if geometry is suitable for OpenLR encoding
+curl -X POST "http://localhost:8000/api/v1/openlr/check-suitability" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "geometry": {"type": "Point", "coordinates": [-87.6294, 41.8783]}
+  }'
+```
+
+## 🗄️ Database Schema
+
+### Key Tables
+
+**closures**
+
+-   `id` - Primary key
+-   `geometry` - PostGIS Geometry (Point or LineString in WGS84)
+-   `geometry_type` - Enum: 'Point', 'LineString'
+-   `start_time`, `end_time` - Temporal bounds
+-   `description` - Human-readable description
+-   `closure_type` - Enum: construction, accident, event, etc.
+-   `status` - Enum: active, expired, cancelled, planned
+-   `openlr_code` - OpenLR location reference (LineString only)
+-   `radius_meters` - Affected radius (Point only)
+-   `submitter_id` - Foreign key to users
+
+**users**
+
+-   `id` - Primary key
+-   `username`, `email` - Authentication
+-   `is_moderator` - Role permissions
+-   `api_key` - API access key
+
+### Spatial Indexes
+
+The database includes optimized spatial indexes for:
+
+-   Bounding box queries (`ST_Intersects`)
+-   Distance queries (`ST_DWithin`)
+-   Geometry type filtering
+-   Time-based filtering
+
+## 📍 Geometry Types Guide
+
+### When to Use Point Geometries
+
+**✅ Perfect for:**
+
+-   Vehicle accidents at intersections
+-   Emergency incidents at specific locations
+-   Small construction sites
+-   Event-based closures (parades, festivals)
+-   Temporary incidents with circular impact area
+
+**🔧 Configuration:**
+
+-   Use `radius_meters` to define affected area (default: 50m)
+-   Higher `confidence_level` for verified incidents
+-   OpenLR encoding not applicable (use coordinate referencing)
+
+### When to Use LineString Geometries
+
+**✅ Perfect for:**
+
+-   Road segment closures
+-   Lane restrictions and construction zones
+-   Planned roadwork along routes
+-   Bridge maintenance
+-   Route diversions
+
+**🔧 Configuration:**
+
+-   Minimum 2 coordinate points required
+-   Automatic OpenLR encoding for navigation compatibility
+-   No `radius_meters` field (use path geometry)
+
+## 📍 OpenLR Integration
+
+### LineString Support
+
+OpenLR (Open Location Referencing) provides map-agnostic location encoding for LineString geometries:
+
+```python
+# Automatic encoding on LineString closure creation
+closure = {
+    "geometry": {"type": "LineString", "coordinates": [...]},
+    # ... other fields
+}
+# System generates: "openlr_code": "CwRbWyNG/ztP"
+
+# Navigation apps can decode this to their own map
+decoded_location = openlr_decoder.decode("CwRbWyNG/ztP")
+```
+
+### Point Alternative Methods
+
+Point geometries use alternative location referencing:
+
+```json
+{
+    "geometry": { "type": "Point", "coordinates": [-87.6294, 41.8783] },
+    "radius_meters": 100,
+    "alternatives": {
+        "coordinates": "41.87830°N, 87.62940°W",
+        "address": "Intersection of Madison St and Wells St",
+        "landmark": "Near Chicago City Hall"
+    }
+}
+```
 
 ## 🐛 Troubleshooting
 
@@ -246,31 +530,9 @@ const ClosureMap = () => {
 
 ## 📄 License
 
-This project is part of Google Summer of Code 2025 and is licensed under the MIT License.
+This project is part of Google Summer of Code 2025 and is licensed under the GNU AGPL v3.0
 
-```
-MIT License
-
-Copyright (c) 2025 Archit Rathod, OpenStreetMap
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
+[License](/LICENSE)
 
 ## 👥 Acknowledgments
 

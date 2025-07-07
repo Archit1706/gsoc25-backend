@@ -6,6 +6,7 @@ This service provides functionality to:
 - Decode OpenLR codes back to geographic coordinates
 - Validate OpenLR codes and geometries
 - Handle different OpenLR formats (binary, base64, XML)
+- Gracefully handle Point geometries (OpenLR not applicable)
 """
 
 import base64
@@ -93,6 +94,7 @@ class OpenLRLocationReference:
 class OpenLRService:
     """
     Service for OpenLR encoding and decoding operations.
+    Handles LineString geometries and gracefully handles Point geometries.
     """
 
     def __init__(self):
@@ -113,10 +115,10 @@ class OpenLRService:
         Encode a GeoJSON geometry to OpenLR format.
 
         Args:
-            geometry: GeoJSON LineString geometry
+            geometry: GeoJSON geometry (LineString, Point, etc.)
 
         Returns:
-            str: OpenLR encoded string (base64 by default)
+            str: OpenLR encoded string (base64 by default) or None if not applicable
 
         Raises:
             OpenLRException: If encoding fails
@@ -129,31 +131,56 @@ class OpenLRService:
         try:
             # Validate geometry
             self._validate_geometry(geometry)
+            geometry_type = geometry.get("type")
 
-            # Extract coordinates
-            coordinates = geometry.get("coordinates", [])
-            if len(coordinates) < 2:
-                raise GeospatialException("LineString must have at least 2 coordinates")
-
-            # Simplified encoding for demonstration purposes
-            # In a real implementation, you would use a proper OpenLR library
-
-            # For now, create a simplified but valid OpenLR-like code
-            encoded_data = self._create_simple_encoding(coordinates)
-
-            # Convert to requested format
-            if self.format == OpenLRFormat.BASE64:
-                return base64.b64encode(encoded_data).decode("ascii")
-            elif self.format == OpenLRFormat.BINARY:
-                return encoded_data.hex()
+            # Handle different geometry types
+            if geometry_type == "Point":
+                logger.info("OpenLR encoding not applicable to Point geometries")
+                return None
+            elif geometry_type == "LineString":
+                return self._encode_linestring(geometry)
+            elif geometry_type == "Polygon":
+                logger.info(
+                    "OpenLR encoding not currently supported for Polygon geometries"
+                )
+                return None
             else:
-                return self._encode_to_xml_simple(coordinates)
+                raise GeospatialException(f"Unsupported geometry type: {geometry_type}")
 
         except Exception as e:
             logger.error(f"OpenLR encoding failed: {e}")
             if isinstance(e, (OpenLRException, GeospatialException)):
                 raise
             raise OpenLRException(f"Encoding failed: {str(e)}")
+
+    def _encode_linestring(self, geometry: Dict[str, Any]) -> Optional[str]:
+        """
+        Encode a LineString geometry to OpenLR format.
+
+        Args:
+            geometry: GeoJSON LineString geometry
+
+        Returns:
+            str: OpenLR encoded string
+        """
+        # Extract coordinates
+        coordinates = geometry.get("coordinates", [])
+        if len(coordinates) < 2:
+            raise GeospatialException("LineString must have at least 2 coordinates")
+
+        # Simplified encoding for demonstration purposes
+        # In a real implementation, you would use a proper OpenLR library
+
+        # For now, create a simplified but valid OpenLR-like code
+        encoded_data = self._create_simple_encoding(coordinates)
+
+        # Convert to requested format
+        if self.format == OpenLRFormat.BASE64:
+            return base64.b64encode(encoded_data).decode("ascii")
+        elif self.format == OpenLRFormat.BINARY:
+            return encoded_data.hex()
+        else:
+            return self._encode_to_xml_simple(coordinates)
 
     def decode_openlr(self, openlr_code: str) -> Optional[Dict[str, Any]]:
         """
@@ -184,7 +211,7 @@ class OpenLRService:
             else:
                 raise OpenLRException("Unknown OpenLR format")
 
-            # Convert to GeoJSON
+            # Convert to GeoJSON LineString
             return {"type": "LineString", "coordinates": coordinates}
 
         except Exception as e:
@@ -255,7 +282,26 @@ class OpenLRService:
             dict: Test results with original, encoded, and decoded data
         """
         try:
-            # Encode
+            geometry_type = geometry.get("type")
+
+            # Handle different geometry types
+            if geometry_type == "Point":
+                return {
+                    "success": False,
+                    "applicable": False,
+                    "original_geometry": geometry,
+                    "error": "OpenLR encoding not applicable to Point geometries",
+                    "note": "Point geometries don't require OpenLR encoding",
+                }
+            elif geometry_type != "LineString":
+                return {
+                    "success": False,
+                    "applicable": False,
+                    "original_geometry": geometry,
+                    "error": f"OpenLR encoding not supported for {geometry_type} geometries",
+                }
+
+            # Test LineString encoding/decoding
             encoded = self.encode_geometry(geometry)
 
             # Decode
@@ -268,6 +314,7 @@ class OpenLRService:
 
             return {
                 "success": decoded is not None,
+                "applicable": True,
                 "original_geometry": geometry,
                 "openlr_code": encoded,
                 "decoded_geometry": decoded,
@@ -278,7 +325,151 @@ class OpenLRService:
             }
 
         except Exception as e:
-            return {"success": False, "error": str(e), "original_geometry": geometry}
+            return {
+                "success": False,
+                "applicable": geometry.get("type") == "LineString",
+                "error": str(e),
+                "original_geometry": geometry,
+            }
+
+    def is_geometry_suitable_for_openlr(
+        self, geometry: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Check if a geometry is suitable for OpenLR encoding.
+
+        Args:
+            geometry: GeoJSON geometry
+
+        Returns:
+            dict: Suitability assessment
+        """
+        geometry_type = geometry.get("type")
+
+        if geometry_type == "Point":
+            return {
+                "suitable": False,
+                "reason": "OpenLR is designed for line-based location referencing, not points",
+                "alternative": "Use radius_meters field for point-based closures",
+                "geometry_type": geometry_type,
+            }
+        elif geometry_type == "LineString":
+            coordinates = geometry.get("coordinates", [])
+
+            if len(coordinates) < 2:
+                return {
+                    "suitable": False,
+                    "reason": "LineString must have at least 2 coordinates",
+                    "geometry_type": geometry_type,
+                }
+
+            # Check minimum distance between points
+            if len(coordinates) >= 2:
+                total_length = 0
+                for i in range(len(coordinates) - 1):
+                    distance = self._calculate_haversine_distance(
+                        coordinates[i], coordinates[i + 1]
+                    )
+                    total_length += distance
+
+                min_length = settings.OPENLR_MIN_DISTANCE * (len(coordinates) - 1)
+
+                if total_length < min_length:
+                    return {
+                        "suitable": False,
+                        "reason": f"LineString too short for reliable OpenLR encoding (total: {total_length:.1f}m, min: {min_length:.1f}m)",
+                        "geometry_type": geometry_type,
+                        "total_length_meters": total_length,
+                        "minimum_length_meters": min_length,
+                    }
+
+            return {
+                "suitable": True,
+                "reason": "LineString geometry is suitable for OpenLR encoding",
+                "geometry_type": geometry_type,
+                "total_length_meters": (
+                    total_length if "total_length" in locals() else None
+                ),
+            }
+        elif geometry_type == "Polygon":
+            return {
+                "suitable": False,
+                "reason": "OpenLR encoding for Polygon geometries not currently supported",
+                "alternative": "Consider using boundary LineString or multiple Point closures",
+                "geometry_type": geometry_type,
+            }
+        else:
+            return {
+                "suitable": False,
+                "reason": f"Unsupported geometry type: {geometry_type}",
+                "geometry_type": geometry_type,
+            }
+
+    def get_point_location_alternatives(
+        self, point_geometry: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Get alternative location referencing methods for Point geometries.
+
+        Args:
+            point_geometry: GeoJSON Point geometry
+
+        Returns:
+            dict: Alternative methods and recommendations
+        """
+        if point_geometry.get("type") != "Point":
+            return {"error": "Geometry must be Point type"}
+
+        coordinates = point_geometry.get("coordinates", [])
+        if len(coordinates) != 2:
+            return {"error": "Invalid Point coordinates"}
+
+        lon, lat = coordinates
+
+        return {
+            "geometry_type": "Point",
+            "coordinates": [lon, lat],
+            "alternatives": {
+                "radius_based": {
+                    "description": "Use radius_meters field to define affected area",
+                    "recommended_radius_meters": [25, 50, 100, 200],
+                    "use_cases": ["Accidents", "Incidents", "Small construction sites"],
+                },
+                "address_based": {
+                    "description": "Use nearest street address or intersection",
+                    "example": "Intersection of Main St and 1st Ave",
+                },
+                "landmark_based": {
+                    "description": "Reference to nearby landmarks",
+                    "example": "Near City Hall entrance",
+                },
+                "coordinates": {
+                    "description": "Direct coordinate reference",
+                    "decimal_degrees": f"{lat:.5f}, {lon:.5f}",
+                    "degrees_minutes_seconds": self._convert_to_dms(lat, lon),
+                },
+            },
+            "recommendations": {
+                "for_accidents": "Use radius_meters=50-100 with high confidence_level",
+                "for_events": "Use radius_meters=100-200 depending on event size",
+                "for_construction": "Consider using LineString if affects road segment",
+            },
+        }
+
+    def _convert_to_dms(self, lat: float, lon: float) -> Dict[str, str]:
+        """Convert decimal degrees to degrees, minutes, seconds format."""
+
+        def dd_to_dms(dd):
+            degrees = int(dd)
+            minutes_float = (dd - degrees) * 60
+            minutes = int(minutes_float)
+            seconds = (minutes_float - minutes) * 60
+            return f"{degrees}°{minutes}'{seconds:.2f}\""
+
+        return {
+            "latitude": dd_to_dms(abs(lat)) + ("N" if lat >= 0 else "S"),
+            "longitude": dd_to_dms(abs(lon)) + ("E" if lon >= 0 else "W"),
+        }
 
     def _create_simple_encoding(self, coordinates: List[List[float]]) -> bytes:
         """
@@ -350,6 +541,7 @@ class OpenLRService:
         xml_parts = ['<?xml version="1.0" encoding="UTF-8"?>']
         xml_parts.append("<OpenLR>")
         xml_parts.append("<LocationReference>")
+        xml_parts.append("<GeometryType>LineString</GeometryType>")
 
         for i, coord in enumerate(coordinates):
             lon, lat = coord
@@ -382,26 +574,42 @@ class OpenLRService:
             raise OpenLRException(f"Invalid XML format: {e}")
 
     def _validate_geometry(self, geometry: Dict[str, Any]) -> None:
-        """Validate GeoJSON geometry for OpenLR encoding."""
+        """Validate GeoJSON geometry for OpenLR processing."""
         if not isinstance(geometry, dict):
             raise GeospatialException("Geometry must be a dictionary")
 
-        if geometry.get("type") != "LineString":
-            raise GeospatialException("Only LineString geometries are supported")
+        if "type" not in geometry or "coordinates" not in geometry:
+            raise GeospatialException(
+                "Geometry must have 'type' and 'coordinates' fields"
+            )
+
+        geometry_type = geometry.get("type")
+        if geometry_type not in ["Point", "LineString", "Polygon"]:
+            raise GeospatialException(f"Unsupported geometry type: {geometry_type}")
 
         coordinates = geometry.get("coordinates", [])
-        if not coordinates or len(coordinates) < 2:
-            raise GeospatialException("LineString must have at least 2 coordinates")
 
-        for coord in coordinates:
-            if not isinstance(coord, list) or len(coord) != 2:
-                raise GeospatialException(
-                    "Each coordinate must be [longitude, latitude]"
-                )
+        if geometry_type == "Point":
+            if not isinstance(coordinates, list) or len(coordinates) != 2:
+                raise GeospatialException("Point must have exactly 2 coordinates")
 
-            lon, lat = coord
+            lon, lat = coordinates
             if not (-180 <= lon <= 180) or not (-90 <= lat <= 90):
-                raise GeospatialException(f"Invalid coordinates: [{lon}, {lat}]")
+                raise GeospatialException(f"Invalid Point coordinates: [{lon}, {lat}]")
+
+        elif geometry_type == "LineString":
+            if not coordinates or len(coordinates) < 2:
+                raise GeospatialException("LineString must have at least 2 coordinates")
+
+            for coord in coordinates:
+                if not isinstance(coord, list) or len(coord) != 2:
+                    raise GeospatialException(
+                        "Each coordinate must be [longitude, latitude]"
+                    )
+
+                lon, lat = coord
+                if not (-180 <= lon <= 180) or not (-90 <= lat <= 90):
+                    raise GeospatialException(f"Invalid coordinates: [{lon}, {lat}]")
 
     def _fetch_osm_way_geometry(
         self, way_id: int, start_node: int = None, end_node: int = None
@@ -483,12 +691,14 @@ class OpenLRService:
 
         total_distance = 0.0
         for orig, dec in zip(orig_coords, dec_coords):
-            distance = self._calculate_distance(orig, dec)
+            distance = self._calculate_haversine_distance(orig, dec)
             total_distance += distance
 
         return total_distance / len(orig_coords) if orig_coords else float("inf")
 
-    def _calculate_distance(self, point1: List[float], point2: List[float]) -> float:
+    def _calculate_haversine_distance(
+        self, point1: List[float], point2: List[float]
+    ) -> float:
         """Calculate distance between two points in meters."""
         R = 6371000  # Earth radius in meters
 
@@ -538,7 +748,7 @@ def encode_coordinates_to_openlr(coordinates: List[List[float]]) -> Optional[str
         coordinates: List of [longitude, latitude] pairs
 
     Returns:
-        str: OpenLR encoded string
+        str: OpenLR encoded string or None if not applicable
     """
     service = create_openlr_service()
     geometry = {"type": "LineString", "coordinates": coordinates}
@@ -558,3 +768,17 @@ def decode_openlr_to_coordinates(openlr_code: str) -> Optional[List[List[float]]
     service = create_openlr_service()
     geometry = service.decode_openlr(openlr_code)
     return geometry.get("coordinates") if geometry else None
+
+
+def check_geometry_openlr_suitability(geometry: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Check if a geometry is suitable for OpenLR encoding.
+
+    Args:
+        geometry: GeoJSON geometry
+
+    Returns:
+        dict: Suitability assessment
+    """
+    service = create_openlr_service()
+    return service.is_geometry_suitable_for_openlr(geometry)

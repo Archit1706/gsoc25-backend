@@ -1,5 +1,5 @@
 """
-Enhanced business logic for closure management with full OpenLR integration.
+Enhanced business logic for closure management with full Point and LineString support plus OpenLR integration.
 """
 
 from sqlalchemy.orm import Session
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 class ClosureService:
     """
-    Enhanced service class for closure-related business logic with OpenLR integration.
+    Enhanced service class for closure-related business logic with Point and LineString support.
     """
 
     def __init__(self, db: Session):
@@ -40,14 +40,14 @@ class ClosureService:
 
     def create_closure(self, closure_data: ClosureCreate, user_id: int) -> Closure:
         """
-        Create a new closure with OpenLR encoding.
+        Create a new closure with OpenLR encoding (for LineString) or point validation.
 
         Args:
             closure_data: Closure creation data
             user_id: ID of user creating the closure
 
         Returns:
-            Closure: Created closure with OpenLR code
+            Closure: Created closure with OpenLR code (if applicable)
 
         Raises:
             ValidationException: If data is invalid
@@ -64,10 +64,12 @@ class ClosureService:
 
             # Convert GeoJSON to PostGIS geometry
             geometry_wkt = self.spatial_service.geojson_to_wkt(geometry_geojson)
+            geometry_type = geometry_geojson.get("type")
 
             # Create closure instance
             closure = Closure(
                 geometry=func.ST_GeomFromText(geometry_wkt, 4326),
+                geometry_type=geometry_type,
                 description=closure_data.description,
                 closure_type=closure_data.closure_type.value,
                 start_time=closure_data.start_time,
@@ -76,29 +78,47 @@ class ClosureService:
                 confidence_level=closure_data.confidence_level,
                 submitter_id=user_id,
                 status=ClosureStatus.ACTIVE.value,
+                radius_meters=closure_data.radius_meters,
             )
 
-            # Generate OpenLR code
-            openlr_result = self._encode_geometry_to_openlr(geometry_geojson)
-            if openlr_result.get("success") and openlr_result.get("openlr_code"):
-                closure.openlr_code = openlr_result["openlr_code"]
+            # Generate OpenLR code only for LineString geometries
+            if geometry_type == "LineString":
+                openlr_result = self._encode_geometry_to_openlr(geometry_geojson)
+                if openlr_result.get("success") and openlr_result.get("openlr_code"):
+                    closure.openlr_code = openlr_result["openlr_code"]
 
-                # Log OpenLR encoding success
-                logger.info(
-                    f"OpenLR encoding successful for closure: {openlr_result.get('accuracy_meters', 'N/A')}m accuracy"
-                )
+                    # Log OpenLR encoding success
+                    logger.info(
+                        f"OpenLR encoding successful for LineString closure: {openlr_result.get('accuracy_meters', 'N/A')}m accuracy"
+                    )
 
-                # Warn if accuracy is poor
-                accuracy = openlr_result.get("accuracy_meters", 0)
-                if accuracy > settings.OPENLR_ACCURACY_TOLERANCE:
+                    # Warn if accuracy is poor
+                    accuracy = openlr_result.get("accuracy_meters", 0)
+                    if accuracy > settings.OPENLR_ACCURACY_TOLERANCE:
+                        logger.warning(
+                            f"OpenLR encoding accuracy ({accuracy}m) exceeds tolerance ({settings.OPENLR_ACCURACY_TOLERANCE}m)"
+                        )
+                else:
+                    # OpenLR encoding failed, but don't fail the entire operation
+                    error_msg = openlr_result.get(
+                        "error", "Unknown OpenLR encoding error"
+                    )
+                    logger.warning(f"OpenLR encoding failed: {error_msg}")
+                    closure.openlr_code = None
+            elif geometry_type == "Point":
+                # Point geometries don't use OpenLR encoding
+                closure.openlr_code = None
+                logger.info("Point closure created without OpenLR encoding")
+
+                # Validate radius for point closures
+                if not closure_data.radius_meters:
                     logger.warning(
-                        f"OpenLR encoding accuracy ({accuracy}m) exceeds tolerance ({settings.OPENLR_ACCURACY_TOLERANCE}m)"
+                        "Point closure created without radius - using default 50m"
                     )
             else:
-                # OpenLR encoding failed, but don't fail the entire operation
-                error_msg = openlr_result.get("error", "Unknown OpenLR encoding error")
-                logger.warning(f"OpenLR encoding failed: {error_msg}")
+                # For other geometry types (future expansion)
                 closure.openlr_code = None
+                logger.info(f"{geometry_type} closure created without OpenLR encoding")
 
             # Save to database
             self.db.add(closure)
@@ -117,7 +137,7 @@ class ClosureService:
         self, closure_id: int, closure_data: ClosureUpdate, user: User
     ) -> Closure:
         """
-        Update an existing closure with OpenLR re-encoding if geometry changes.
+        Update an existing closure with OpenLR re-encoding if LineString geometry changes.
 
         Args:
             closure_id: Closure ID to update
@@ -151,23 +171,43 @@ class ClosureService:
                 geometry_geojson = self._round_geometry_coordinates(geometry_geojson)
 
                 geometry_wkt = self.spatial_service.geojson_to_wkt(geometry_geojson)
+                geometry_type = geometry_geojson.get("type")
+
                 closure.geometry = func.ST_GeomFromText(geometry_wkt, 4326)
+                closure.geometry_type = geometry_type
                 geometry_updated = True
 
-                # Regenerate OpenLR code for new geometry
-                openlr_result = self._encode_geometry_to_openlr(geometry_geojson)
-                if openlr_result.get("success") and openlr_result.get("openlr_code"):
-                    closure.openlr_code = openlr_result["openlr_code"]
-                    logger.info(
-                        f"OpenLR code regenerated for updated closure {closure_id}"
-                    )
+                # Handle OpenLR code based on new geometry type
+                if geometry_type == "LineString":
+                    # Regenerate OpenLR code for LineString geometry
+                    openlr_result = self._encode_geometry_to_openlr(geometry_geojson)
+                    if openlr_result.get("success") and openlr_result.get(
+                        "openlr_code"
+                    ):
+                        closure.openlr_code = openlr_result["openlr_code"]
+                        logger.info(
+                            f"OpenLR code regenerated for updated LineString closure {closure_id}"
+                        )
+                    else:
+                        logger.warning(
+                            f"Failed to regenerate OpenLR code for closure {closure_id}: {openlr_result.get('error')}"
+                        )
+                        closure.openlr_code = None
                 else:
-                    logger.warning(
-                        f"Failed to regenerate OpenLR code for closure {closure_id}: {openlr_result.get('error')}"
-                    )
+                    # For Point and other geometries, clear OpenLR code
                     closure.openlr_code = None
+                    logger.info(
+                        f"OpenLR code cleared for {geometry_type} closure {closure_id}"
+                    )
 
                 del update_data["geometry"]
+
+            # Validate radius_meters consistency with geometry type
+            if "radius_meters" in update_data:
+                if closure.geometry_type != "Point" and update_data["radius_meters"]:
+                    raise ValidationException(
+                        f"radius_meters can only be set for Point geometries, not {closure.geometry_type}"
+                    )
 
             # Update other fields
             for field, value in update_data.items():
@@ -267,6 +307,9 @@ class ClosureService:
         if params.closure_type:
             query = query.filter(Closure.closure_type == params.closure_type)
 
+        if params.geometry_type:
+            query = query.filter(Closure.geometry_type == params.geometry_type)
+
         if params.start_time:
             query = query.filter(Closure.start_time >= params.start_time)
 
@@ -315,10 +358,20 @@ class ClosureService:
             geometry = self._round_geometry_coordinates(geometry)
             closure_dict["geometry"] = geometry
 
-            # Add OpenLR validation info if OpenLR code exists
-            if closure.openlr_code and self.openlr_enabled:
+            # Add OpenLR validation info if OpenLR code exists (LineString only)
+            if (
+                closure.openlr_code
+                and self.openlr_enabled
+                and closure.geometry_type == "LineString"
+            ):
                 openlr_info = self._validate_openlr_code(closure.openlr_code, geometry)
                 closure_dict["openlr_validation"] = openlr_info
+            elif closure.geometry_type == "Point":
+                # Add point-specific information
+                closure_dict["openlr_validation"] = {
+                    "applicable": False,
+                    "reason": "OpenLR not applicable to Point geometries",
+                }
 
         return closure_dict
 
@@ -363,8 +416,13 @@ class ClosureService:
 
             closure_dict["geometry"] = geometry
 
-            # Add OpenLR validation info if enabled and code exists
-            if closure.openlr_code and self.openlr_enabled and geometry:
+            # Add OpenLR validation info if enabled and applicable
+            if (
+                closure.openlr_code
+                and self.openlr_enabled
+                and geometry
+                and closure.geometry_type == "LineString"
+            ):
                 try:
                     openlr_info = self._validate_openlr_code(
                         closure.openlr_code, geometry
@@ -378,6 +436,11 @@ class ClosureService:
                         "valid": False,
                         "error": str(e),
                     }
+            elif closure.geometry_type == "Point":
+                closure_dict["openlr_validation"] = {
+                    "applicable": False,
+                    "reason": "OpenLR not applicable to Point geometries",
+                }
 
             result.append(closure_dict)
 
@@ -385,10 +448,10 @@ class ClosureService:
 
     def get_statistics(self) -> Dict[str, Any]:
         """
-        Get closure statistics including OpenLR encoding success rate.
+        Get closure statistics including geometry type breakdown and OpenLR metrics.
 
         Returns:
-            dict: Statistics data including OpenLR metrics
+            dict: Statistics data including geometry type and OpenLR metrics
         """
         now = datetime.now(timezone.utc)
 
@@ -412,7 +475,6 @@ class ClosureService:
             .group_by(Closure.closure_type)
             .all()
         )
-
         by_type = {str(type_val): count for type_val, count in type_stats}
 
         # Closures by status
@@ -421,8 +483,25 @@ class ClosureService:
             .group_by(Closure.status)
             .all()
         )
-
         by_status = {str(status_val): count for status_val, count in status_stats}
+
+        # Closures by geometry type
+        geometry_type_stats = (
+            self.db.query(Closure.geometry_type, func.count(Closure.id))
+            .group_by(Closure.geometry_type)
+            .all()
+        )
+        by_geometry_type = {
+            str(geom_type): count for geom_type, count in geometry_type_stats
+        }
+
+        # Point and LineString counts
+        point_closures = (
+            self.db.query(Closure).filter(Closure.geometry_type == "Point").count()
+        )
+        linestring_closures = (
+            self.db.query(Closure).filter(Closure.geometry_type == "LineString").count()
+        )
 
         # Average duration
         avg_duration_result = (
@@ -434,28 +513,34 @@ class ClosureService:
             .filter(Closure.end_time.isnot(None))
             .scalar()
         )
-
         avg_duration_hours = float(avg_duration_result) if avg_duration_result else None
 
         # OpenLR statistics
         openlr_stats = {}
         if self.openlr_enabled:
-            # Count closures with OpenLR codes
-            closures_with_openlr = (
-                self.db.query(Closure).filter(Closure.openlr_code.isnot(None)).count()
+            # Count LineString closures with OpenLR codes
+            linestring_with_openlr = (
+                self.db.query(Closure)
+                .filter(
+                    Closure.geometry_type == "LineString",
+                    Closure.openlr_code.isnot(None),
+                )
+                .count()
             )
 
             openlr_encoding_rate = (
-                (closures_with_openlr / total_closures * 100)
-                if total_closures > 0
+                (linestring_with_openlr / linestring_closures * 100)
+                if linestring_closures > 0
                 else 0
             )
 
             openlr_stats = {
                 "enabled": True,
-                "total_encoded": closures_with_openlr,
+                "total_encoded": linestring_with_openlr,
+                "applicable_closures": linestring_closures,
                 "encoding_success_rate": round(openlr_encoding_rate, 2),
                 "format": settings.OPENLR_FORMAT,
+                "note": "OpenLR only applicable to LineString geometries",
             }
         else:
             openlr_stats = {"enabled": False}
@@ -465,13 +550,16 @@ class ClosureService:
             "valid_closures": valid_closures,
             "by_type": by_type,
             "by_status": by_status,
+            "by_geometry_type": by_geometry_type,
+            "point_closures": point_closures,
+            "linestring_closures": linestring_closures,
             "avg_duration_hours": avg_duration_hours,
             "openlr": openlr_stats,
         }
 
     def validate_closure_openlr(self, closure_id: int) -> Dict[str, Any]:
         """
-        Validate OpenLR encoding for a specific closure.
+        Validate OpenLR encoding for a specific closure (LineString only).
 
         Args:
             closure_id: Closure ID to validate
@@ -481,9 +569,18 @@ class ClosureService:
         """
         closure = self.get_closure_by_id(closure_id)
 
+        if closure.geometry_type != "LineString":
+            return {
+                "valid": False,
+                "applicable": False,
+                "error": f"OpenLR validation not applicable to {closure.geometry_type} geometries",
+                "closure_id": closure_id,
+            }
+
         if not closure.openlr_code:
             return {
                 "valid": False,
+                "applicable": True,
                 "error": "No OpenLR code available",
                 "closure_id": closure_id,
             }
@@ -498,17 +595,20 @@ class ClosureService:
         if not geometry_result or not geometry_result[0]:
             return {
                 "valid": False,
+                "applicable": True,
                 "error": "No geometry available",
                 "closure_id": closure_id,
             }
 
         geometry = json.loads(geometry_result[0])
         geometry = self._round_geometry_coordinates(geometry)
-        return self._validate_openlr_code(closure.openlr_code, geometry)
+        validation_result = self._validate_openlr_code(closure.openlr_code, geometry)
+        validation_result["applicable"] = True
+        return validation_result
 
     def regenerate_openlr_codes(self, force: bool = False) -> Dict[str, Any]:
         """
-        Regenerate OpenLR codes for closures that don't have them or have invalid codes.
+        Regenerate OpenLR codes for LineString closures that don't have them or have invalid codes.
 
         Args:
             force: If True, regenerate all codes regardless of existing status
@@ -519,8 +619,8 @@ class ClosureService:
         if not self.openlr_enabled:
             return {"error": "OpenLR is disabled"}
 
-        # Find closures needing OpenLR codes
-        query = self.db.query(Closure)
+        # Find LineString closures needing OpenLR codes
+        query = self.db.query(Closure).filter(Closure.geometry_type == "LineString")
         if not force:
             query = query.filter(Closure.openlr_code.is_(None))
 
@@ -530,11 +630,17 @@ class ClosureService:
             "total_processed": len(closures),
             "successful": 0,
             "failed": 0,
+            "skipped": 0,
             "errors": [],
         }
 
         for closure in closures:
             try:
+                # Skip non-LineString geometries
+                if closure.geometry_type != "LineString":
+                    results["skipped"] += 1
+                    continue
+
                 # Get geometry
                 geometry_result = (
                     self.db.query(ST_AsGeoJSON(Closure.geometry))
@@ -591,27 +697,51 @@ class ClosureService:
         if not geometry or "coordinates" not in geometry:
             return geometry
 
-        def round_coord_array(coords):
-            if isinstance(coords[0], list):
-                return [round_coord_array(coord) for coord in coords]
-            else:
-                return [round(coords[0], 5), round(coords[1], 5)]
-
+        geometry_type = geometry.get("type")
         rounded_geometry = geometry.copy()
-        rounded_geometry["coordinates"] = round_coord_array(geometry["coordinates"])
+
+        if geometry_type == "Point":
+            # Point: [lon, lat]
+            coords = geometry["coordinates"]
+            rounded_geometry["coordinates"] = [round(coords[0], 5), round(coords[1], 5)]
+        elif geometry_type == "LineString":
+            # LineString: [[lon, lat], [lon, lat], ...]
+            coords = geometry["coordinates"]
+            rounded_coords = []
+            for coord in coords:
+                rounded_coords.append([round(coord[0], 5), round(coord[1], 5)])
+            rounded_geometry["coordinates"] = rounded_coords
+        elif geometry_type == "Polygon":
+            # Polygon: [[[lon, lat], ...], [[lon, lat], ...], ...]
+            coords = geometry["coordinates"]
+            rounded_rings = []
+            for ring in coords:
+                rounded_ring = []
+                for coord in ring:
+                    rounded_ring.append([round(coord[0], 5), round(coord[1], 5)])
+                rounded_rings.append(rounded_ring)
+            rounded_geometry["coordinates"] = rounded_rings
+
         return rounded_geometry
 
     def _encode_geometry_to_openlr(self, geometry: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Encode geometry to OpenLR with validation.
+        Encode LineString geometry to OpenLR with validation.
 
         Args:
-            geometry: GeoJSON geometry
+            geometry: GeoJSON LineString geometry
 
         Returns:
             dict: Encoding result with success status and details
         """
         try:
+            # Only encode LineString geometries
+            if geometry.get("type") != "LineString":
+                return {
+                    "success": False,
+                    "error": f"OpenLR encoding only supports LineString, not {geometry.get('type')}",
+                }
+
             # Encode to OpenLR
             openlr_code = self.openlr_service.encode_geometry(geometry)
 
@@ -642,11 +772,11 @@ class ClosureService:
         self, openlr_code: str, original_geometry: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        Validate an OpenLR code against original geometry.
+        Validate an OpenLR code against original LineString geometry.
 
         Args:
             openlr_code: OpenLR code to validate
-            original_geometry: Original GeoJSON geometry
+            original_geometry: Original GeoJSON LineString geometry
 
         Returns:
             dict: Validation results
@@ -677,7 +807,7 @@ class ClosureService:
     def _calculate_geometry_accuracy(
         self, geom1: Dict[str, Any], geom2: Dict[str, Any]
     ) -> float:
-        """Calculate accuracy between two geometries in meters."""
+        """Calculate accuracy between two LineString geometries in meters."""
         if not geom1 or not geom2:
             return float("inf")
 
@@ -723,7 +853,7 @@ class ClosureService:
 
     def _validate_geometry(self, geometry: Dict[str, Any]) -> None:
         """
-        Validate GeoJSON geometry for OpenLR encoding.
+        Validate GeoJSON geometry for both Point and LineString.
 
         Args:
             geometry: GeoJSON geometry object
@@ -740,11 +870,20 @@ class ClosureService:
             )
 
         geometry_type = geometry["type"]
-        if geometry_type not in ["LineString", "Point", "Polygon"]:
+        if geometry_type not in ["Point", "LineString", "Polygon"]:
             raise GeospatialException(f"Unsupported geometry type: {geometry_type}")
 
         coordinates = geometry["coordinates"]
-        if geometry_type == "LineString":
+
+        if geometry_type == "Point":
+            if not isinstance(coordinates, list) or len(coordinates) != 2:
+                raise GeospatialException("Point must have exactly 2 coordinates")
+
+            lon, lat = coordinates
+            if not (-180 <= lon <= 180) or not (-90 <= lat <= 90):
+                raise GeospatialException(f"Invalid Point coordinates: [{lon}, {lat}]")
+
+        elif geometry_type == "LineString":
             if len(coordinates) < 2:
                 raise GeospatialException("LineString must have at least 2 coordinates")
 
@@ -758,6 +897,16 @@ class ClosureService:
                         logger.warning(
                             f"Points {i} and {i+1} are closer than minimum distance ({distance}m < {settings.OPENLR_MIN_DISTANCE}m)"
                         )
+
+        elif geometry_type == "Polygon":
+            if not isinstance(coordinates, list) or len(coordinates) == 0:
+                raise GeospatialException("Polygon must have at least one ring")
+
+            for ring in coordinates:
+                if not isinstance(ring, list) or len(ring) < 4:
+                    raise GeospatialException(
+                        "Polygon ring must have at least 4 coordinates"
+                    )
 
     def _parse_bbox(self, bbox: str) -> Tuple[float, float, float, float]:
         """

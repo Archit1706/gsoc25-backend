@@ -20,6 +20,7 @@ from app.services.openlr_service import (
     create_openlr_service,
     encode_coordinates_to_openlr,
     decode_openlr_to_coordinates,
+    check_geometry_openlr_suitability,
 )
 from app.core.exceptions import OpenLRException, GeospatialException
 from app.config import settings
@@ -39,13 +40,28 @@ class OpenLREncodeRequest(BaseModel):
 
     model_config = {
         "json_schema_extra": {
-            "example": {
-                "geometry": {
-                    "type": "LineString",
-                    "coordinates": [[-87.6298, 41.8781], [-87.6290, 41.8785]],
+            "examples": [
+                {
+                    "name": "LineString Encoding",
+                    "value": {
+                        "geometry": {
+                            "type": "LineString",
+                            "coordinates": [[-87.6298, 41.8781], [-87.6290, 41.8785]],
+                        },
+                        "validate_roundtrip": True,
+                    },
                 },
-                "validate_roundtrip": True,
-            }
+                {
+                    "name": "Point Encoding (Not Applicable)",
+                    "value": {
+                        "geometry": {
+                            "type": "Point",
+                            "coordinates": [-87.6294, 41.8783],
+                        },
+                        "validate_roundtrip": False,
+                    },
+                },
+            ]
         }
     }
 
@@ -76,6 +92,10 @@ class OpenLRResponse(BaseModel):
     """Response schema for OpenLR operations."""
 
     success: bool = Field(..., description="Whether operation was successful")
+    applicable: bool = Field(
+        True, description="Whether OpenLR is applicable to this geometry type"
+    )
+    geometry_type: Optional[str] = Field(None, description="Input geometry type")
     openlr_code: Optional[str] = Field(None, description="Generated OpenLR code")
     geometry: Optional[Dict[str, Any]] = Field(None, description="Decoded geometry")
     accuracy_meters: Optional[float] = Field(
@@ -86,13 +106,20 @@ class OpenLRResponse(BaseModel):
     )
     error: Optional[str] = Field(None, description="Error message if operation failed")
     warning: Optional[str] = Field(None, description="Warning message")
+    note: Optional[str] = Field(None, description="Informational note")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
+    alternatives: Optional[Dict[str, Any]] = Field(
+        None, description="Alternative methods for Point geometries"
+    )
 
 
 class OpenLRValidationResponse(BaseModel):
     """Response schema for OpenLR validation."""
 
     valid: bool = Field(..., description="Whether OpenLR code is valid")
+    applicable: bool = Field(
+        True, description="Whether OpenLR validation is applicable"
+    )
     accuracy_meters: Optional[float] = Field(None, description="Accuracy in meters")
     tolerance_meters: float = Field(..., description="Configured tolerance")
     decoded_geometry: Optional[Dict[str, Any]] = Field(
@@ -100,6 +127,7 @@ class OpenLRValidationResponse(BaseModel):
     )
     openlr_code: str = Field(..., description="Validated OpenLR code")
     error: Optional[str] = Field(None, description="Error message if validation failed")
+    geometry_type: Optional[str] = Field(None, description="Geometry type")
 
 
 class OpenLRStatsResponse(BaseModel):
@@ -108,10 +136,16 @@ class OpenLRStatsResponse(BaseModel):
     enabled: bool = Field(..., description="Whether OpenLR is enabled")
     format: Optional[str] = Field(None, description="OpenLR format in use")
     total_encoded: Optional[int] = Field(
-        None, description="Total closures with OpenLR codes"
+        None, description="Total LineString closures with OpenLR codes"
+    )
+    applicable_closures: Optional[int] = Field(
+        None, description="Total LineString closures (OpenLR applicable)"
+    )
+    point_closures: Optional[int] = Field(
+        None, description="Total Point closures (OpenLR not applicable)"
     )
     encoding_success_rate: Optional[float] = Field(
-        None, description="Encoding success rate percentage"
+        None, description="Encoding success rate percentage for LineString closures"
     )
     accuracy_tolerance: float = Field(..., description="Configured accuracy tolerance")
     settings: Dict[str, Any] = Field(..., description="OpenLR configuration settings")
@@ -121,6 +155,8 @@ class RegenerationResponse(BaseModel):
     """Response schema for OpenLR code regeneration."""
 
     total_processed: int = Field(..., description="Total closures processed")
+    applicable: int = Field(..., description="LineString closures processed")
+    skipped: int = Field(..., description="Point closures skipped")
     successful: int = Field(..., description="Successfully regenerated codes")
     failed: int = Field(..., description="Failed regenerations")
     errors: List[str] = Field(..., description="List of error messages")
@@ -131,7 +167,7 @@ class RegenerationResponse(BaseModel):
     "/info",
     response_model=OpenLRStatsResponse,
     summary="Get OpenLR information",
-    description="Get OpenLR configuration and statistics.",
+    description="Get OpenLR configuration and statistics including geometry type breakdown.",
 )
 async def get_openlr_info(
     current_user: Optional[User] = Depends(get_current_user_optional),
@@ -142,8 +178,9 @@ async def get_openlr_info(
     Returns information about:
     - OpenLR enabled status
     - Configuration settings
-    - Encoding format
-    - Accuracy tolerance
+    - Encoding format and accuracy tolerance
+    - Statistics for LineString closures (OpenLR applicable)
+    - Count of Point closures (OpenLR not applicable)
     """
     openlr_settings = settings.openlr_settings
 
@@ -159,7 +196,7 @@ async def get_openlr_info(
     "/encode",
     response_model=OpenLRResponse,
     summary="Encode geometry to OpenLR",
-    description="Encode a GeoJSON geometry to OpenLR format with optional validation.",
+    description="Encode a GeoJSON geometry to OpenLR format with geometry type awareness.",
 )
 async def encode_geometry(
     request: OpenLREncodeRequest,
@@ -168,14 +205,20 @@ async def encode_geometry(
     """
     Encode a GeoJSON geometry to OpenLR format.
 
-    **Parameters:**
-    - **geometry**: GeoJSON LineString geometry
-    - **validate_roundtrip**: Whether to validate with roundtrip test
+    **Geometry Type Support:**
+    - **LineString**: Full OpenLR encoding and validation
+    - **Point**: Not applicable - returns alternative location methods
+    - **Polygon**: Not currently supported
 
-    **Returns:**
-    - OpenLR encoded string
-    - Validation results if requested
-    - Accuracy metrics
+    **For LineString geometries:**
+    - Returns OpenLR encoded string
+    - Provides validation results if requested
+    - Includes accuracy metrics
+
+    **For Point geometries:**
+    - Explains why OpenLR is not applicable
+    - Suggests alternative location referencing methods
+    - Provides coordinate formats and recommendations
 
     **Note:** This endpoint can be used to test OpenLR encoding without
     creating a closure. Authentication is optional for testing.
@@ -189,13 +232,40 @@ async def encode_geometry(
     try:
         openlr_service = create_openlr_service()
         geometry_dict = request.geometry.dict()
+        geometry_type = geometry_dict.get("type")
 
+        # Check geometry suitability for OpenLR
+        suitability = openlr_service.is_geometry_suitable_for_openlr(geometry_dict)
+
+        if not suitability.get("suitable", False):
+            # Handle Point geometries and other non-suitable types
+            response_data = {
+                "success": False,
+                "applicable": False,
+                "geometry_type": geometry_type,
+                "openlr_code": None,
+                "error": suitability.get("reason"),
+                "note": suitability.get("alternative", ""),
+            }
+
+            # Add alternative methods for Point geometries
+            if geometry_type == "Point":
+                alternatives = openlr_service.get_point_location_alternatives(
+                    geometry_dict
+                )
+                response_data["alternatives"] = alternatives
+
+            return OpenLRResponse(**response_data)
+
+        # Process LineString geometries
         if request.validate_roundtrip:
             # Use roundtrip test for full validation
             result = openlr_service.test_encoding_roundtrip(geometry_dict)
 
             return OpenLRResponse(
                 success=result.get("success", False),
+                applicable=result.get("applicable", True),
+                geometry_type=geometry_type,
                 openlr_code=result.get("openlr_code"),
                 geometry=result.get("decoded_geometry"),
                 accuracy_meters=result.get("accuracy_meters"),
@@ -212,6 +282,8 @@ async def encode_geometry(
 
             return OpenLRResponse(
                 success=openlr_code is not None,
+                applicable=True,
+                geometry_type=geometry_type,
                 openlr_code=openlr_code,
                 error="Encoding failed" if openlr_code is None else None,
             )
@@ -242,7 +314,7 @@ async def decode_openlr_code(
     - **openlr_code**: OpenLR encoded string (base64, hex, or XML)
 
     **Returns:**
-    - Decoded GeoJSON geometry
+    - Decoded GeoJSON geometry (always LineString)
     - Success status
 
     **Supported Formats:**
@@ -250,7 +322,8 @@ async def decode_openlr_code(
     - Hexadecimal encoded binary OpenLR
     - XML OpenLR format
 
-    **Note:** Authentication is optional for testing purposes.
+    **Note:** OpenLR codes always decode to LineString geometries since
+    OpenLR is designed for linear location referencing.
     """
     if not settings.OPENLR_ENABLED:
         raise HTTPException(
@@ -264,9 +337,15 @@ async def decode_openlr_code(
 
         return OpenLRResponse(
             success=decoded_geometry is not None,
+            applicable=True,
+            geometry_type="LineString",
             geometry=decoded_geometry,
             error="Decoding failed" if decoded_geometry is None else None,
-            metadata={"openlr_code": request.openlr_code, "format_detected": "auto"},
+            metadata={
+                "openlr_code": request.openlr_code,
+                "format_detected": "auto",
+                "note": "OpenLR always decodes to LineString geometries",
+            },
         )
 
     except OpenLRException as e:
@@ -276,6 +355,41 @@ async def decode_openlr_code(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"OpenLR decoding failed: {str(e)}",
         )
+
+
+@router.post(
+    "/check-suitability",
+    summary="Check OpenLR suitability",
+    description="Check if a geometry is suitable for OpenLR encoding.",
+)
+async def check_openlr_suitability(
+    request: OpenLREncodeRequest,
+    current_user: Optional[User] = Depends(get_current_user_optional),
+):
+    """
+    Check if a geometry is suitable for OpenLR encoding.
+
+    **Returns:**
+    - Suitability assessment
+    - Reason for suitability/unsuitability
+    - Alternative methods for Point geometries
+    - Recommendations based on geometry type
+
+    **Use Cases:**
+    - Validate geometry before creating closures
+    - Get recommendations for Point-based location referencing
+    - Understand OpenLR limitations and alternatives
+    """
+    geometry_dict = request.geometry.dict()
+    suitability = check_geometry_openlr_suitability(geometry_dict)
+
+    # Add alternatives for Point geometries
+    if geometry_dict.get("type") == "Point":
+        openlr_service = create_openlr_service()
+        alternatives = openlr_service.get_point_location_alternatives(geometry_dict)
+        suitability["alternatives"] = alternatives
+
+    return suitability
 
 
 @router.post(
@@ -298,10 +412,11 @@ async def encode_osm_way(
 
     **Returns:**
     - OpenLR encoded string for the OSM way
-    - Way geometry as GeoJSON
+    - Way geometry as GeoJSON LineString
 
     **Note:** This endpoint fetches way data from OpenStreetMap API.
-    Large ways may take longer to process.
+    Large ways may take longer to process. OSM ways are always LineString
+    geometries, so OpenLR encoding is always applicable.
     """
     if not settings.OPENLR_ENABLED:
         raise HTTPException(
@@ -322,6 +437,8 @@ async def encode_osm_way(
 
         return OpenLRResponse(
             success=openlr_code is not None,
+            applicable=True,
+            geometry_type="LineString",
             openlr_code=openlr_code,
             geometry=geometry,
             error="Encoding failed" if openlr_code is None else None,
@@ -393,15 +510,18 @@ async def validate_openlr_code(
 
         return OpenLRValidationResponse(
             valid=is_valid,
+            applicable=True,
             tolerance_meters=settings.OPENLR_ACCURACY_TOLERANCE,
             decoded_geometry=decoded_geometry,
             openlr_code=request.openlr_code,
             error=error_msg,
+            geometry_type="LineString" if decoded_geometry else None,
         )
 
     except Exception as e:
         return OpenLRValidationResponse(
             valid=False,
+            applicable=True,
             tolerance_meters=settings.OPENLR_ACCURACY_TOLERANCE,
             openlr_code=request.openlr_code,
             error=str(e),
@@ -432,22 +552,22 @@ async def validate_closure_openlr(
 
     **Validation Process:**
     1. Retrieves closure and its geometry
-    2. Decodes the OpenLR code
-    3. Compares decoded geometry with original
-    4. Calculates accuracy metrics
-    """
-    if not settings.OPENLR_ENABLED:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="OpenLR validation is disabled",
-        )
+    2. Checks if OpenLR is applicable to the geometry type
+    3. For LineString: Decodes the OpenLR code and compares with original
+    4. For Point: Explains why OpenLR is not applicable
+    5. Calculates accuracy metrics for LineString geometries
 
+    **Geometry Type Handling:**
+    - **LineString**: Full OpenLR validation with accuracy metrics
+    - **Point**: Returns not applicable with explanation
+    """
     try:
         service = ClosureService(db)
         validation_result = service.validate_closure_openlr(closure_id)
 
         return OpenLRValidationResponse(
             valid=validation_result.get("valid", False),
+            applicable=validation_result.get("applicable", True),
             accuracy_meters=validation_result.get("accuracy_meters"),
             tolerance_meters=validation_result.get(
                 "tolerance_meters", settings.OPENLR_ACCURACY_TOLERANCE
@@ -455,6 +575,7 @@ async def validate_closure_openlr(
             decoded_geometry=validation_result.get("decoded_geometry"),
             openlr_code=validation_result.get("openlr_code", ""),
             error=validation_result.get("error"),
+            geometry_type=validation_result.get("geometry_type"),
         )
 
     except Exception as e:
@@ -468,32 +589,38 @@ async def validate_closure_openlr(
     "/regenerate",
     response_model=RegenerationResponse,
     summary="Regenerate OpenLR codes",
-    description="Regenerate OpenLR codes for closures (moderators only).",
+    description="Regenerate OpenLR codes for LineString closures (moderators only).",
 )
 async def regenerate_openlr_codes(
-    force: bool = Query(False, description="Force regeneration for all closures"),
+    force: bool = Query(
+        False, description="Force regeneration for all LineString closures"
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_moderator),
 ):
     """
-    Regenerate OpenLR codes for closures that don't have them or have invalid codes.
+    Regenerate OpenLR codes for LineString closures that don't have them or have invalid codes.
 
     **Parameters:**
-    - **force**: If true, regenerate codes for all closures regardless of existing status
+    - **force**: If true, regenerate codes for all LineString closures regardless of existing status
 
     **Authorization:**
     - Requires moderator privileges
 
     **Process:**
-    1. Identifies closures needing OpenLR codes
-    2. Generates codes for each closure geometry
-    3. Validates new codes
-    4. Updates database with successful codes
+    1. Identifies LineString closures needing OpenLR codes
+    2. Skips Point closures (OpenLR not applicable)
+    3. Generates codes for each LineString geometry
+    4. Validates new codes
+    5. Updates database with successful codes
 
     **Returns:**
     - Processing statistics
     - Success/failure counts
+    - Number of Point closures skipped
     - Error details for failed regenerations
+
+    **Note:** Point closures are automatically skipped since OpenLR is not applicable.
     """
     if not settings.OPENLR_ENABLED:
         raise HTTPException(
@@ -517,7 +644,7 @@ async def regenerate_openlr_codes(
     "/statistics",
     response_model=OpenLRStatsResponse,
     summary="Get OpenLR statistics",
-    description="Get detailed OpenLR usage statistics (moderators only).",
+    description="Get detailed OpenLR usage statistics with geometry type breakdown (moderators only).",
 )
 async def get_openlr_statistics(
     db: Session = Depends(get_db), current_user: User = Depends(get_current_moderator)
@@ -529,13 +656,15 @@ async def get_openlr_statistics(
     - Requires moderator privileges
 
     **Statistics Include:**
-    - Total closures with OpenLR codes
-    - Encoding success rate
+    - Total LineString closures with OpenLR codes
+    - Total Point closures (OpenLR not applicable)
+    - Encoding success rate for LineString closures
     - Configuration settings
     - Performance metrics
 
     **Returns:**
     - Comprehensive OpenLR statistics
+    - Geometry type breakdown
     - Usage patterns
     - System health metrics
     """
@@ -549,6 +678,8 @@ async def get_openlr_statistics(
             enabled=openlr_stats.get("enabled", False),
             format=openlr_stats.get("format"),
             total_encoded=openlr_stats.get("total_encoded"),
+            applicable_closures=openlr_stats.get("applicable_closures"),
+            point_closures=stats.get("point_closures", 0),
             encoding_success_rate=openlr_stats.get("encoding_success_rate"),
             accuracy_tolerance=settings.OPENLR_ACCURACY_TOLERANCE,
             settings=settings.openlr_settings,
@@ -584,8 +715,11 @@ async def test_coordinate_encoding(
     `/test/coordinates?coordinates=-87.6298,41.8781,-87.6290,41.8785`
 
     **Returns:**
-    - OpenLR encoded string
+    - OpenLR encoded string for LineString
     - Validation results
+
+    **Note:** This endpoint creates a LineString from the coordinates.
+    For Point testing, use the main encode endpoint.
     """
     if not settings.OPENLR_ENABLED:
         raise HTTPException(
@@ -603,16 +737,19 @@ async def test_coordinate_encoding(
         for i in range(0, len(coord_values), 2):
             coord_pairs.append([coord_values[i], coord_values[i + 1]])
 
-        # Encode
+        # Encode as LineString
         openlr_code = encode_coordinates_to_openlr(coord_pairs)
 
         return OpenLRResponse(
             success=openlr_code is not None,
+            applicable=True,
+            geometry_type="LineString",
             openlr_code=openlr_code,
             error="Encoding failed" if openlr_code is None else None,
             metadata={
                 "input_coordinates": coord_pairs,
                 "coordinate_count": len(coord_pairs),
+                "note": "Coordinates encoded as LineString geometry",
             },
         )
 
@@ -626,3 +763,79 @@ async def test_coordinate_encoding(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Encoding failed: {str(e)}",
         )
+
+
+@router.get(
+    "/geometry-support",
+    summary="Get geometry type support information",
+    description="Get information about OpenLR support for different geometry types.",
+)
+async def get_geometry_support_info():
+    """
+    Get information about OpenLR support for different geometry types.
+
+    Returns detailed information about which geometry types are supported
+    by OpenLR and what alternatives are available for unsupported types.
+    """
+    return {
+        "openlr_enabled": settings.OPENLR_ENABLED,
+        "supported_geometries": {
+            "LineString": {
+                "supported": True,
+                "description": "Fully supported with encoding, decoding, and validation",
+                "use_cases": [
+                    "Road segment closures",
+                    "Lane restrictions",
+                    "Construction zones",
+                    "Route diversions",
+                ],
+                "features": [
+                    "Automatic encoding",
+                    "Roundtrip validation",
+                    "Accuracy metrics",
+                    "Navigation compatibility",
+                ],
+            },
+            "Point": {
+                "supported": False,
+                "description": "Not supported by OpenLR standard",
+                "reason": "OpenLR is designed for linear location referencing",
+                "alternatives": {
+                    "radius_based": "Use radius_meters field to define affected area",
+                    "coordinate_based": "Direct coordinate reference with precision",
+                    "address_based": "Reference to nearest address or intersection",
+                    "landmark_based": "Reference to nearby landmarks",
+                },
+                "use_cases": [
+                    "Accident locations",
+                    "Incident responses",
+                    "Point-based events",
+                    "Emergency situations",
+                ],
+                "recommended_fields": ["radius_meters", "confidence_level"],
+            },
+            "Polygon": {
+                "supported": False,
+                "description": "Not currently supported",
+                "reason": "Complex area referencing not implemented",
+                "alternatives": {
+                    "boundary_linestring": "Use LineString for polygon boundary",
+                    "multiple_points": "Use multiple Point closures",
+                    "center_point_with_radius": "Use center Point with large radius",
+                },
+                "future_support": "May be added in future versions",
+            },
+        },
+        "recommendations": {
+            "for_road_segments": "Use LineString geometry for OpenLR compatibility",
+            "for_intersections": "Use Point geometry with appropriate radius",
+            "for_large_areas": "Consider multiple Point closures or boundary LineString",
+            "for_navigation_apps": "LineString closures provide best integration",
+        },
+        "configuration": {
+            "accuracy_tolerance_meters": settings.OPENLR_ACCURACY_TOLERANCE,
+            "minimum_distance_meters": settings.OPENLR_MIN_DISTANCE,
+            "format": settings.OPENLR_FORMAT,
+            "validation_enabled": settings.OPENLR_VALIDATE_ROUNDTRIP,
+        },
+    }
